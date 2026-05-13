@@ -68,8 +68,6 @@ class GF_Field_Cap extends GF_Field {
 	 */
 	public function get_form_editor_field_settings() {
 		return array(
-			'label_setting',
-			'label_placement_setting',
 			'description_setting',
 			'css_class_setting',
 			'error_message_setting',
@@ -78,15 +76,31 @@ class GF_Field_Cap extends GF_Field {
 	}
 
 	/**
-	 * Set default properties — hide the field label by default.
+	 * Set default properties — no visible label; the widget exposes its own
+	 * accessible name via `aria-label` on the container.
 	 *
 	 * @return array
 	 */
 	public function get_field_defaults() {
 		return array(
-			'label'          => 'CAPTCHA',
+			'label'          => esc_html__( 'CAPTCHA', 'gravity-cap' ),
 			'labelPlacement' => 'hidden_label',
 		);
+	}
+
+	/**
+	 * Suppress the visible `<label>` markup on the frontend. The widget
+	 * container still carries an `aria-label` so screen readers announce it.
+	 *
+	 * @param string $field_label The field label.
+	 * @param array  $form        The form object.
+	 * @return string
+	 */
+	public function get_field_label( $force_frontend_label, $value ) {
+		if ( $this->is_form_editor() || $this->is_entry_detail() ) {
+			return parent::get_field_label( $force_frontend_label, $value );
+		}
+		return '';
 	}
 
 	/**
@@ -98,7 +112,10 @@ class GF_Field_Cap extends GF_Field {
 	 * @return string
 	 */
 	public function get_field_input( $form, $value = '', $entry = null ) {
-		$field_id = sprintf( 'field_%d_%d', (int) rgar( $form, 'id' ), $this->id );
+		// Use `input_X_Y` for the inner container — Gravity Forms already puts
+		// `field_X_Y` on the outer .gfield wrapper, and a duplicate id causes
+		// the Cap widget to mount twice.
+		$field_id = sprintf( 'input_%d_%d', (int) rgar( $form, 'id' ), $this->id );
 
 		// In the form editor or entry detail, show a placeholder.
 		if ( $this->is_form_editor() || $this->is_entry_detail() ) {
@@ -143,9 +160,12 @@ class GF_Field_Cap extends GF_Field {
 			$attr_string .= sprintf( ' %s="%s"', $attr, $val );
 		}
 
+		$aria_label = $this->label ? $this->label : esc_html__( 'CAPTCHA', 'gravity-cap' );
+
 		return sprintf(
-			'<div class="ginput_container ginput_container_cap_captcha" id="%s"><cap-widget data-cap-api-endpoint="%s" style="--cap-widget-width:100%%"%s></cap-widget></div>',
+			'<div class="ginput_container ginput_container_cap_captcha" id="%s" role="group" aria-label="%s"><cap-widget data-cap-api-endpoint="%s" style="--cap-widget-width:100%%"%s></cap-widget></div>',
 			esc_attr( $field_id ),
+			esc_attr( $aria_label ),
 			esc_url( $endpoint ),
 			$attr_string
 		);
@@ -208,10 +228,18 @@ class GF_Field_Cap extends GF_Field {
 			) ),
 		) );
 
+		// Fail-open on network errors: the Cap server is unreachable, so we can't
+		// distinguish legitimate users from bots. Log loudly so the admin notices.
 		if ( is_wp_error( $response ) ) {
-			$this->failed_validation  = true;
-			$this->validation_message = esc_html__( 'CAPTCHA verification failed due to a network error. Please try again.', 'gravity-cap' );
-			GFCommon::log_error( 'GF_Field_Cap: wp_remote_post failed — ' . $response->get_error_message() );
+			GFCommon::log_error( 'GF_Field_Cap: Cap server unreachable, allowing submission (fail-open) — ' . $response->get_error_message() );
+			return;
+		}
+
+		$code = (int) wp_remote_retrieve_response_code( $response );
+
+		// Fail-open on 5xx: the server is up but malfunctioning.
+		if ( $code >= 500 ) {
+			GFCommon::log_error( sprintf( 'GF_Field_Cap: Cap server returned %d, allowing submission (fail-open).', $code ) );
 			return;
 		}
 

@@ -3,7 +3,7 @@
  * Plugin Name: Gravity Forms Cap CAPTCHA
  * Plugin URI:  https://github.com/eightam/eightam-gravity-cap
  * Description: Adds a Cap proof-of-work CAPTCHA field to Gravity Forms. Lightweight, privacy-first spam protection.
- * Version:     1.2.0
+ * Version:     1.2.3
  * Author:      8am GmbH
  * Author URI:  https://8am.ch
  * Text Domain: gravity-cap
@@ -17,9 +17,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'EGCAP_VERSION', '1.2.0' );
+define( 'EGCAP_VERSION', '1.2.3' );
 define( 'EGCAP_PLUGIN_FILE', __FILE__ );
 define( 'EGCAP_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
+
+// CDN fallback when the Cap server's assets endpoint is unavailable.
+// Pinned to a known-good version — bump when upgrading.
+define( 'EGCAP_CDN_WIDGET_URL', 'https://cdn.jsdelivr.net/npm/@cap.js/widget@0.1.51/cap.min.js' );
 
 // Self-updater via GitHub Releases (runs independently of Gravity Forms).
 require_once EGCAP_PLUGIN_DIR . 'includes/class-egcap-updater.php';
@@ -86,25 +90,88 @@ function egcap_enqueue_scripts( $form, $ajax ) {
 		return;
 	}
 
+	$server_url = egcap_get_setting( 'cap_server_url' );
+	if ( empty( $server_url ) ) {
+		return;
+	}
+
+	if ( egcap_assets_server_available( $server_url ) ) {
+		$widget_src = trailingslashit( $server_url ) . 'assets/widget.js';
+	} else {
+		$widget_src = EGCAP_CDN_WIDGET_URL;
+	}
+
 	wp_enqueue_script(
 		'cap-widget',
-		plugins_url( 'assets/js/cap.min.js', __FILE__ ),
+		$widget_src,
 		array(),
-		EGCAP_VERSION,
+		null,
 		true
 	);
 }
 
 /**
- * Add type="module" to the Cap widget script tag.
+ * Check whether the Cap server's assets endpoint is reachable.
+ *
+ * Result is cached in a transient (6h) and re-checked when settings are saved.
+ *
+ * @param string $server_url Configured Cap server URL.
+ * @return bool True if widget.js is reachable on the Cap server.
  */
-add_filter( 'script_loader_tag', 'egcap_add_module_type', 10, 3 );
+function egcap_assets_server_available( $server_url ) {
+	$cache_key = 'egcap_assets_ok_' . md5( $server_url );
+	$cached    = get_transient( $cache_key );
 
-function egcap_add_module_type( $tag, $handle, $src ) {
-	if ( 'cap-widget' !== $handle ) {
-		return $tag;
+	if ( false !== $cached ) {
+		return '1' === $cached;
 	}
-	return str_replace( '<script ', '<script type="module" ', $tag );
+
+	$ok = egcap_probe_assets_endpoint( $server_url );
+	set_transient( $cache_key, $ok ? '1' : '0', 6 * HOUR_IN_SECONDS );
+
+	return $ok;
+}
+
+/**
+ * Probe the Cap server's /assets/widget.js endpoint.
+ *
+ * @param string $server_url Cap server base URL.
+ * @return bool
+ */
+function egcap_probe_assets_endpoint( $server_url ) {
+	$url = trailingslashit( $server_url ) . 'assets/widget.js';
+
+	$response = wp_remote_head( $url, array(
+		'timeout'     => 5,
+		'redirection' => 2,
+	) );
+
+	if ( is_wp_error( $response ) ) {
+		return false;
+	}
+
+	$code = (int) wp_remote_retrieve_response_code( $response );
+	return $code >= 200 && $code < 400;
+}
+
+/**
+ * Re-probe the assets endpoint whenever the settings are saved.
+ */
+add_action( 'update_option_gravityformsaddon_gravity-cap_settings', 'egcap_refresh_assets_probe', 10, 2 );
+add_action( 'add_option_gravityformsaddon_gravity-cap_settings', 'egcap_refresh_assets_probe_added', 10, 2 );
+
+function egcap_refresh_assets_probe( $old_value, $new_value ) {
+	$server_url = isset( $new_value['cap_server_url'] ) ? trim( $new_value['cap_server_url'] ) : '';
+	if ( empty( $server_url ) ) {
+		return;
+	}
+	delete_transient( 'egcap_assets_ok_' . md5( $server_url ) );
+	// Prime the cache immediately so the next page load uses the fresh result.
+	egcap_assets_server_available( $server_url );
+}
+
+function egcap_refresh_assets_probe_added( $option, $value ) {
+	egcap_refresh_assets_probe( array(), $value );
 }
 
 /**
@@ -139,7 +206,7 @@ class GF_Cap_Settings extends GFAddOn {
 						'label'   => esc_html__( 'Cap Server URL', 'gravity-cap' ),
 						'type'    => 'text',
 						'class'   => 'medium',
-						'tooltip' => esc_html__( 'The URL of your self-hosted Cap server, e.g. https://captcha.example.com', 'gravity-cap' ),
+						'tooltip' => esc_html__( 'The URL of your self-hosted Cap server, e.g. https://captcha.example.com. Enable ENABLE_ASSETS_SERVER on the Cap server to serve the widget directly; otherwise the plugin falls back to a public CDN.', 'gravity-cap' ),
 					),
 					array(
 						'name'    => 'cap_site_key',
