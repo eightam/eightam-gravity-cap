@@ -163,7 +163,7 @@ class GF_Field_Cap extends GF_Field {
 		$aria_label = $this->label ? $this->label : esc_html__( 'CAPTCHA', 'gravity-cap' );
 
 		return sprintf(
-			'<div class="ginput_container ginput_container_cap_captcha" id="%s" role="group" aria-label="%s"><cap-widget data-cap-api-endpoint="%s" style="--cap-widget-width:100%%"%s></cap-widget></div>',
+			'<div class="ginput_container ginput_container_cap_captcha" id="%s" role="group" aria-label="%s"><cap-widget data-cap-api-endpoint="%s" style="display:block;"%s></cap-widget></div>',
 			esc_attr( $field_id ),
 			esc_attr( $aria_label ),
 			esc_url( $endpoint ),

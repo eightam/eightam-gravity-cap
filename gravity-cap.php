@@ -3,7 +3,7 @@
  * Plugin Name: Gravity Forms Cap CAPTCHA
  * Plugin URI:  https://github.com/eightam/eightam-gravity-cap
  * Description: Adds a Cap proof-of-work CAPTCHA field to Gravity Forms. Lightweight, privacy-first spam protection.
- * Version:     1.2.3
+ * Version:     1.2.4
  * Author:      8am GmbH
  * Author URI:  https://8am.ch
  * Text Domain: gravity-cap
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'EGCAP_VERSION', '1.2.3' );
+define( 'EGCAP_VERSION', '1.2.4' );
 define( 'EGCAP_PLUGIN_FILE', __FILE__ );
 define( 'EGCAP_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 
