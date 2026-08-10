@@ -96,7 +96,7 @@ class GF_Field_Cap extends GF_Field {
 	 * @param array  $form        The form object.
 	 * @return string
 	 */
-	public function get_field_label( $force_frontend_label, $value ) {
+	public function get_field_label( $force_frontend_label = true, $value = '' ) {
 		if ( $this->is_form_editor() || $this->is_entry_detail() ) {
 			return parent::get_field_label( $force_frontend_label, $value );
 		}
