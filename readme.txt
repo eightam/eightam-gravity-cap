@@ -3,7 +3,7 @@ Contributors: 8amgmbh
 Tags: gravity forms, captcha, cap, proof-of-work, spam protection
 Requires at least: 5.0
 Tested up to: 6.7
-Stable tag: 1.2.3
+Stable tag: 1.2.6
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -38,6 +38,17 @@ This plugin integrates [Cap](https://github.com/tiagozip/cap) — a modern, self
 5. Edit a form and drag the "Cap CAPTCHA" field from Advanced Fields into your form
 
 == Changelog ==
+
+= 1.2.6 =
+* Re-released the `get_field_label()` fix. The v1.2.5 tag was cut from the commit *before* that fix, so the published 1.2.5 package still carried the fatal error.
+* The updater no longer hardcodes the plugin's directory name. Installs unpacked into a versioned folder (e.g. `eightam-gravity-cap-1.2.5`) were never matched against the update transient and so were never offered an update at all.
+* Updates now unpack into the directory the plugin already occupies. Releases without an attached zip fall back to GitHub's zipball, which unpacks as `eightam-eightam-gravity-cap-<sha>/` and would otherwise install a second copy alongside the active one.
+
+= 1.2.5 =
+* Fixed a fatal error: `GF_Field_Cap::get_field_label()` was declared without the default parameter values that `GF_Field::get_field_label()` declares, which PHP rejects as an incompatible override. Any form using the Cap CAPTCHA field would fail to render. (Superseded by 1.2.6 — the 1.2.5 package did not actually contain this fix.)
+
+= 1.2.4 =
+* Adjusted block sizing.
 
 = 1.2.3 =
 * Fixed duplicate widget rendering caused by an `id` collision between the outer Gravity Forms `.gfield` wrapper and the inner `ginput_container`. The inner container now uses `input_X_Y` (matching the label's `for` attribute), which also avoids re-triggering the web component's `connectedCallback` when other scripts (e.g. collapsible sections, conditional logic) reattach the node.
