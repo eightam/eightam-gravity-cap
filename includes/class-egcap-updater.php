@@ -15,8 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 class EGCAP_Updater {
 
 	private const GITHUB_REPO  = 'eightam/eightam-gravity-cap';
-	private const PLUGIN_SLUG  = 'eightam-gravity-cap';
-	private const PLUGIN_FILE  = 'eightam-gravity-cap/gravity-cap.php';
+	private const CANON_SLUG   = 'eightam-gravity-cap';
 	private const CACHE_KEY    = 'egcap_update_info';
 	private const CACHE_EXPIRY = 12 * HOUR_IN_SECONDS;
 
@@ -26,7 +25,33 @@ class EGCAP_Updater {
 	public static function init() {
 		add_filter( 'plugins_api', array( __CLASS__, 'plugin_info' ), 20, 3 );
 		add_filter( 'site_transient_update_plugins', array( __CLASS__, 'check_update' ) );
+		add_filter( 'upgrader_source_selection', array( __CLASS__, 'rename_source' ), 10, 4 );
 		add_action( 'upgrader_process_complete', array( __CLASS__, 'clear_cache' ), 10, 2 );
+	}
+
+	/**
+	 * The plugin's basename as WordPress knows it, e.g.
+	 * `eightam-gravity-cap/gravity-cap.php`.
+	 *
+	 * Derived at runtime rather than hardcoded: installs unpacked from a
+	 * GitHub zipball or a versioned zip land in a directory such as
+	 * `eightam-gravity-cap-1.2.5`, and a hardcoded basename would never
+	 * match, silently disabling updates for exactly the installs that need
+	 * them most.
+	 *
+	 * @return string
+	 */
+	private static function plugin_file() {
+		return plugin_basename( EGCAP_PLUGIN_FILE );
+	}
+
+	/**
+	 * The directory this plugin actually lives in, used as the update slug.
+	 *
+	 * @return string
+	 */
+	private static function plugin_slug() {
+		return dirname( self::plugin_file() );
 	}
 
 	/**
@@ -102,12 +127,13 @@ class EGCAP_Updater {
 			return $transient;
 		}
 
-		$current_version = $transient->checked[ self::PLUGIN_FILE ] ?? EGCAP_VERSION;
+		$plugin_file     = self::plugin_file();
+		$current_version = $transient->checked[ $plugin_file ] ?? EGCAP_VERSION;
 
 		if ( version_compare( $remote->version, $current_version, '>' ) ) {
-			$transient->response[ self::PLUGIN_FILE ] = (object) array(
-				'slug'         => self::PLUGIN_SLUG,
-				'plugin'       => self::PLUGIN_FILE,
+			$transient->response[ $plugin_file ] = (object) array(
+				'slug'         => self::plugin_slug(),
+				'plugin'       => $plugin_file,
 				'new_version'  => $remote->version,
 				'url'          => $remote->homepage,
 				'package'      => $remote->download_url,
@@ -129,7 +155,11 @@ class EGCAP_Updater {
 	 * @return false|object
 	 */
 	public static function plugin_info( $result, $action, $args ) {
-		if ( 'plugin_information' !== $action || self::PLUGIN_SLUG !== ( $args->slug ?? '' ) ) {
+		$slug = $args->slug ?? '';
+
+		if ( 'plugin_information' !== $action
+			|| ( self::CANON_SLUG !== $slug && self::plugin_slug() !== $slug )
+		) {
 			return $result;
 		}
 
@@ -141,7 +171,7 @@ class EGCAP_Updater {
 
 		return (object) array(
 			'name'          => 'Gravity Forms Cap CAPTCHA',
-			'slug'          => self::PLUGIN_SLUG,
+			'slug'          => self::plugin_slug(),
 			'version'       => $remote->version,
 			'author'        => '<a href="https://8am.ch">8am GmbH</a>',
 			'homepage'      => $remote->homepage,
@@ -154,6 +184,46 @@ class EGCAP_Updater {
 				'changelog'   => $remote->changelog ?? '',
 			),
 		);
+	}
+
+	/**
+	 * Normalize the unpacked directory name before WordPress installs it.
+	 *
+	 * Releases without an attached zip fall back to GitHub's zipball, which
+	 * unpacks to `eightam-eightam-gravity-cap-<sha>/`. WordPress derives the
+	 * install destination from that directory name, so an update would land
+	 * in a brand new folder next to the existing one, leaving the old (and
+	 * still active) copy in place. Rename the source to the directory the
+	 * plugin already occupies so the update overwrites it.
+	 *
+	 * @param string       $source        Path to the unpacked files.
+	 * @param string       $remote_source Path to the upload/download dir.
+	 * @param \WP_Upgrader $upgrader      Upgrader instance.
+	 * @param array        $hook_extra    Extra args; `plugin` is the basename.
+	 * @return string|\WP_Error
+	 */
+	public static function rename_source( $source, $remote_source, $upgrader, $hook_extra = array() ) {
+		global $wp_filesystem;
+
+		// Only touch our own upgrades — never rewrite another plugin's source.
+		if ( self::plugin_file() !== ( $hook_extra['plugin'] ?? '' ) ) {
+			return $source;
+		}
+
+		$desired = trailingslashit( $remote_source ) . self::plugin_slug();
+
+		if ( untrailingslashit( $source ) === $desired || ! $wp_filesystem ) {
+			return $source;
+		}
+
+		if ( ! $wp_filesystem->move( $source, $desired ) ) {
+			return new WP_Error(
+				'egcap_rename_failed',
+				__( 'Could not rename the downloaded plugin directory.', 'gravity-cap' )
+			);
+		}
+
+		return trailingslashit( $desired );
 	}
 
 	/**

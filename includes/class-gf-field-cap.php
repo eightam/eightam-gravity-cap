@@ -92,8 +92,12 @@ class GF_Field_Cap extends GF_Field {
 	 * Suppress the visible `<label>` markup on the frontend. The widget
 	 * container still carries an `aria-label` so screen readers announce it.
 	 *
-	 * @param string $field_label The field label.
-	 * @param array  $form        The form object.
+	 * Signature must match GF_Field::get_field_label() exactly, defaults
+	 * included — PHP treats a missing default as an incompatible override
+	 * and fatals on load.
+	 *
+	 * @param bool   $force_frontend_label Whether to force the frontend label.
+	 * @param string $value                Current field value.
 	 * @return string
 	 */
 	public function get_field_label( $force_frontend_label = true, $value = '' ) {
