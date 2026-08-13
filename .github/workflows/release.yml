@@ -1,0 +1,178 @@
+name: Release
+
+# Builds and publishes a release from the current commit.
+#
+# The 1.2.5 release shipped broken because the tag was cut from the commit
+# *before* the fix it advertised, and nobody noticed that the tagged tree
+# still declared the previous version. Every step below runs against the
+# tree being released, and the version consistency check is a hard gate —
+# a tag whose tree disagrees with itself fails instead of publishing.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the leading v (e.g. 1.2.7). Must already match EGCAP_VERSION in gravity-cap.php on the selected branch.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the tree being released
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        env:
+          # Via env rather than direct interpolation — inputs are untrusted
+          # and would otherwise be pasted into the shell verbatim.
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = 'workflow_dispatch' ]; then
+            version="${INPUT_VERSION#v}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version '$version' is not a bare semver like 1.2.7."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version from $(git rev-parse HEAD)"
+
+      - name: Verify the tree agrees with the version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          fail=0
+
+          check() {
+            local label="$1" found="$2"
+            if [ "$found" != "$VERSION" ]; then
+              echo "::error::$label is '$found', expected '$VERSION'."
+              fail=1
+            else
+              echo "ok: $label = $found"
+            fi
+          }
+
+          check 'plugin header Version' \
+            "$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gravity-cap.php | head -1)"
+          check 'EGCAP_VERSION' \
+            "$(sed -n "s/^define( 'EGCAP_VERSION', '\(.*\)' );$/\1/p" gravity-cap.php | head -1)"
+          check 'readme.txt Stable tag' \
+            "$(sed -n 's/^Stable tag:[[:space:]]*\(.*\)$/\1/p' readme.txt | head -1)"
+
+          if ! grep -qE "^= ${VERSION//./\\.} =$" readme.txt; then
+            echo "::error::readme.txt has no changelog section for $VERSION."
+            fail=1
+          else
+            echo "ok: changelog section for $VERSION present"
+          fi
+
+          exit $fail
+
+      - name: Lint PHP
+        run: |
+          set -euo pipefail
+          find . -name '*.php' -not -path './.git/*' -print0 \
+            | xargs -0 -n1 php -l
+
+      - name: Build the plugin zip
+        id: build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # WordPress derives the install directory from the zip's top-level
+          # folder, so it must be the canonical slug — not a versioned name,
+          # and not GitHub's zipball layout.
+          staging="$(mktemp -d)"
+          mkdir -p "$staging/eightam-gravity-cap"
+          git archive HEAD | tar -x -C "$staging/eightam-gravity-cap"
+
+          # Repo-only files that should not ship to sites.
+          rm -f "$staging/eightam-gravity-cap/.gitignore"
+          rm -rf "$staging/eightam-gravity-cap/.github"
+
+          mkdir -p dist
+          ( cd "$staging" && zip -rq "$GITHUB_WORKSPACE/dist/eightam-gravity-cap-$VERSION.zip" eightam-gravity-cap )
+
+          echo "zip=dist/eightam-gravity-cap-$VERSION.zip" >> "$GITHUB_OUTPUT"
+          unzip -l "dist/eightam-gravity-cap-$VERSION.zip"
+
+      - name: Verify the built zip
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ZIP: ${{ steps.build.outputs.zip }}
+        run: |
+          set -euo pipefail
+          # Guard the exact failure mode that shipped in 1.2.5: a package whose
+          # contents do not match what the release claims.
+          header="$(unzip -p "$ZIP" eightam-gravity-cap/gravity-cap.php \
+            | sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' | head -1)"
+          if [ "$header" != "$VERSION" ]; then
+            echo "::error::Packaged plugin reports '$header', expected '$VERSION'."
+            exit 1
+          fi
+
+          if ! unzip -l "$ZIP" | grep -q 'eightam-gravity-cap/gravity-cap.php'; then
+            echo "::error::Zip is missing eightam-gravity-cap/gravity-cap.php at the expected path."
+            exit 1
+          fi
+
+          echo "ok: packaged plugin reports $header"
+
+      - name: Extract release notes from readme.txt
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          awk -v want="= $VERSION =" '
+            $0 == want { grab = 1; next }
+            grab && /^= .* =$/ { exit }
+            grab { print }
+          ' readme.txt | sed '/./,$!d' > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "::error::Extracted empty release notes for $VERSION."
+            exit 1
+          fi
+          cat release-notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ZIP: ${{ steps.build.outputs.zip }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists. Bump the version instead of re-cutting a published tag — sites that already pulled $TAG would never see the replacement."
+            exit 1
+          fi
+
+          # --target pins the tag to this exact commit, creating it if the run
+          # was dispatched from a branch.
+          gh release create "$TAG" "$ZIP" \
+            --title "$VERSION" \
+            --target "$GITHUB_SHA" \
+            --notes-file release-notes.md
